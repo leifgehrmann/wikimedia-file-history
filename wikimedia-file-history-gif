@@ -1,0 +1,96 @@
+#!/bin/sh
+
+verify_tools_are_installed() {
+    if ! [[ -x "$(command -v jq)" ]]; then
+        echo 'Error: jq is not installed' >&2
+        exit 1
+    elif ! [[ -x "$(command -v curl)" ]]; then
+        echo 'Error: curl is not installed' >&2
+        exit 1
+    elif ! [[ -x "$(command -v rsvg-convert)" ]]; then
+        echo 'Error: rsvg-convert (libsvg) is not installed' >&2
+        exit 1
+    elif ! [[ -x "$(command -v convert)" ]]; then
+        echo 'Error: convert (imagemagick) is not installed' >&2
+        exit 1
+    fi
+
+    return
+}
+
+# https://stackoverflow.com/questions/44810685/how-to-sanitize-a-string-in-bash
+sanitize() {
+   local s="${1?need a string}" # receive input in first argument
+   s="${s//[^a-zA-Z0-9_.-]/-}"  # replace all non-alnum characters to -
+   s="${s//+(-)/-}"             # convert multiple - to single -
+   s="${s/#-}"                  # remove - from start
+   s="${s/%-}"                  # remove - from end
+   echo "${s}"
+}
+
+verify_tools_are_installed
+
+# Read the arguments
+wikipedia_file=$1
+output=$2
+size=$3
+request_revision_limit=250
+request_delay=1 # In seconds
+cache_dir='./cache'
+gif_step=50
+
+# Create the cache dir
+mkdir -p "$cache_dir"
+
+# Download the file revisions and URLs
+curl \
+    --data-urlencode "action=query" \
+    --data-urlencode "titles=$1" \
+    --data-urlencode "prop=imageinfo" \
+    --data-urlencode "format=json" \
+    --data-urlencode "iilimit=$request_revision_limit" \
+    --data-urlencode "iiprop=url" \
+    https://www.mediawiki.org/w/api.php \
+    -o "$cache_dir/revision_history.json"
+
+# Parse every "url" from the JSON, from oldest to newest.
+image_url_strs=(`jq '.query.pages["-1"].imageinfo[].url' cache/revision_history.json`)
+file_arguments=''
+image_sequence_number=0
+for (( idx=${#image_url_strs[@]}-1 ; idx>=0 ; idx--)); do
+    image_url=`echo "${image_url_strs[idx]}" | tr -d '"'`
+    echo $image_url
+    # echo $image_url
+    image_sequence_number_zero_pad=`printf "%05d\n" $image_sequence_number`
+    download_filename=`sanitize "$image_url"`
+    download_filename="${image_sequence_number_zero_pad}-${download_filename}"
+    # echo $download_filename
+
+    # Download file if it hasn't already been downloaded
+    if ! [[ -f "${cache_dir}/${download_filename}" ]]; then
+        curl -o "${cache_dir}/${download_filename}" "$image_url"
+        sleep "${request_delay}"
+    fi
+
+    # Convert SVGs to PNGs if one has been downloaded
+    if [[ "${download_filename}" = *.svg ]]; then
+        download_png_filename=${download_filename%.svg}.png
+        if ! [[ -f "${cache_dir}/${download_png_filename}" ]]; then
+            rsvg-convert "${cache_dir}/${download_filename}" -o "${cache_dir}/${download_png_filename}"
+        fi
+        download_filename=$download_png_filename
+    fi
+
+    # Resize all the images to be the same size
+    resize_filename="resize-${download_filename}"
+    if ! [[ -f "${cache_dir}/${resize_filename}" ]]; then
+        convert -size "${size}" "${cache_dir}/${download_filename}" "${cache_dir}/${resize_filename}"
+    fi
+
+    # Collect all the files to be used later in an argument for creating GIFs
+    # The list is ordered from oldest to newest
+    file_arguments="${file_arguments} ${cache_dir}/${resize_filename}"
+    ((image_sequence_number=image_sequence_number+1))
+done
+
+convert -resize ${size} -delay ${gif_step} -loop 0 $file_arguments "${output}"

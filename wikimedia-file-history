@@ -37,7 +37,8 @@ size=$3
 request_revision_limit=250
 request_delay=1 # In seconds
 cache_dir='./cache'
-gif_step=50
+mp4_fps=2 # 2 frames per second
+gif_delay=`expr 100 / ${mp4_fps}`
 
 # Create the cache dir
 mkdir -p "$cache_dir"
@@ -59,12 +60,9 @@ file_arguments=''
 image_sequence_number=0
 for (( idx=${#image_url_strs[@]}-1 ; idx>=0 ; idx--)); do
     image_url=`echo "${image_url_strs[idx]}" | tr -d '"'`
-    echo $image_url
-    # echo $image_url
     image_sequence_number_zero_pad=`printf "%05d\n" $image_sequence_number`
     download_filename=`sanitize "$image_url"`
     download_filename="${image_sequence_number_zero_pad}-${download_filename}"
-    # echo $download_filename
 
     # Download file if it hasn't already been downloaded
     if ! [[ -f "${cache_dir}/${download_filename}" ]]; then
@@ -87,10 +85,17 @@ for (( idx=${#image_url_strs[@]}-1 ; idx>=0 ; idx--)); do
         convert -size "${size}" "${cache_dir}/${download_filename}" "${cache_dir}/${resize_filename}"
     fi
 
-    # Collect all the files to be used later in an argument for creating GIFs
-    # The list is ordered from oldest to newest
+    # Collect all the files to be used later in an argument for creating
+    # GIF/MP4s. The list is ordered from oldest to newest.
     file_arguments="${file_arguments} ${cache_dir}/${resize_filename}"
     ((image_sequence_number=image_sequence_number+1))
 done
 
-convert -resize ${size} -delay ${gif_step} -loop 0 $file_arguments "${output}"
+if [[ "${output}" = *.gif ]]; then
+  convert -resize ${size} -delay ${gif_delay} -loop 0 $file_arguments "${output}"
+elif [[ "${output}" = *.mp4 ]]; then
+  cat $file_arguments | ffmpeg -framerate ${mp4_fps} -f image2pipe -i - -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" $2
+else
+  echo "Error: Unknown output format: '${output}'. Must be either *.mp4 or *.gif"
+  exit 1
+fi
